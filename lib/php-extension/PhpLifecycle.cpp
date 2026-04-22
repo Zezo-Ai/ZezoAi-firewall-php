@@ -16,7 +16,31 @@ void PhpLifecycle::ModuleInit() {
     }
 }
 
+bool PhpLifecycle::IsRequestHandledInMainPid() const {
+    // Skip any Aikido work that would dlopen aikido-request-processor.so in
+    // the php-fpm / apache master's opcache.preload virtual RINIT cycle:
+    // loading the Go runtime there would make every forked worker inherit
+    // a runtime whose scheduler threads do not exist in its address space.
+    #ifndef ZTS
+        if (this->mainPID != 0 && this->mainPID == getpid()) {
+            if (AIKIDO_GLOBAL(sapi_name) == "fpm-fcgi" || AIKIDO_GLOBAL(sapi_name) == "apache2handler") {
+                return true;
+            }
+        }
+    #endif
+    return false;
+}
+
+
 void PhpLifecycle::RequestInit() {
+    if (IsRequestHandledInMainPid()) {
+        AIKIDO_LOG_INFO("Skipping RequestInit in %s master (pid %d == mainPID; "
+                        "likely opcache.preload virtual RINIT). Workers will "
+                        "initialize the request processor after fork.\n",
+                        AIKIDO_GLOBAL(sapi_name).c_str(), (int)getpid());
+        return;
+    }
+
     AIKIDO_GLOBAL(action).Reset();
     AIKIDO_GLOBAL(requestCache).Reset();
     
@@ -29,6 +53,9 @@ void PhpLifecycle::RequestInit() {
 }
 
 void PhpLifecycle::RequestShutdown() {
+    if (IsRequestHandledInMainPid()) {
+        return;
+    }
     AIKIDO_GLOBAL(requestProcessorInstance).RequestShutdown();
 }
 
